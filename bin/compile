@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# bin/compile BUILD_DIR CACHE_DIR ENV_DIR
+set -euo pipefail
+
+BUILD_DIR="$1"
+CACHE_DIR="$2"
+ENV_DIR="${3:-}"
+
+topic() { echo "-----> $*"; }
+indent() { sed -u 's/^/       /'; }
+
+# Read optional config vars: FIREFOX_VERSION, GECKODRIVER_VERSION
+for var in FIREFOX_VERSION GECKODRIVER_VERSION; do
+  if [ -n "$ENV_DIR" ] && [ -f "$ENV_DIR/$var" ]; then
+    export "$var=$(cat "$ENV_DIR/$var")"
+  fi
+done
+
+FIREFOX_VERSION="${FIREFOX_VERSION:-latest}"
+GECKODRIVER_VERSION="${GECKODRIVER_VERSION:-0.36.0}"
+
+INSTALL_DIR="$BUILD_DIR/.firefox"
+mkdir -p "$INSTALL_DIR" "$CACHE_DIR"
+
+# ---- Firefox ----
+if [ "$FIREFOX_VERSION" = "latest" ]; then
+  FF_URL="https://download.mozilla.org/?product=firefox-latest-ssl&os=linux64&lang=en-US"
+  FF_CACHE=""
+else
+  FF_URL="https://download.mozilla.org/?product=firefox-${FIREFOX_VERSION}-ssl&os=linux64&lang=en-US"
+  FF_CACHE="$CACHE_DIR/firefox-${FIREFOX_VERSION}.tar"
+fi
+
+topic "Installing Firefox ($FIREFOX_VERSION)"
+TMP_FF="$(mktemp)"
+if [ -n "$FF_CACHE" ] && [ -f "$FF_CACHE" ]; then
+  echo "Using cached archive" | indent
+  cp "$FF_CACHE" "$TMP_FF"
+else
+  curl -fsSL --retry 3 -o "$TMP_FF" "$FF_URL"
+  [ -n "$FF_CACHE" ] && cp "$TMP_FF" "$FF_CACHE"
+fi
+
+# Mozilla ships .tar.xz (>=135) or .tar.bz2 (older); let tar sniff it.
+case "$(file -b "$TMP_FF")" in
+  *XZ*)    tar -xJf "$TMP_FF" -C "$INSTALL_DIR" ;;
+  *bzip2*) tar -xjf "$TMP_FF" -C "$INSTALL_DIR" ;;
+  *)       echo "Unknown Firefox archive format" | indent; exit 1 ;;
+esac
+rm -f "$TMP_FF"
+"$INSTALL_DIR/firefox/firefox" --version 2>/dev/null | indent || echo "(version check skipped)" | indent
+
+# ---- geckodriver ----
+topic "Installing geckodriver v$GECKODRIVER_VERSION"
+GD_CACHE="$CACHE_DIR/geckodriver-${GECKODRIVER_VERSION}.tar.gz"
+if [ ! -f "$GD_CACHE" ]; then
+  curl -fsSL --retry 3 -o "$GD_CACHE" \
+    "https://github.com/mozilla/geckodriver/releases/download/v${GECKODRIVER_VERSION}/geckodriver-v${GECKODRIVER_VERSION}-linux64.tar.gz"
+fi
+mkdir -p "$INSTALL_DIR/bin"
+tar -xzf "$GD_CACHE" -C "$INSTALL_DIR/bin"
+chmod +x "$INSTALL_DIR/bin/geckodriver"
+ln -sf ../firefox/firefox "$INSTALL_DIR/bin/firefox"
+
+# ---- runtime env ----
+mkdir -p "$BUILD_DIR/.profile.d"
+cat > "$BUILD_DIR/.profile.d/firefox.sh" <<'PROFILE'
+export PATH="$HOME/.firefox/bin:$PATH"
+export FIREFOX_BIN="$HOME/.firefox/firefox/firefox"
+export GECKODRIVER_PATH="$HOME/.firefox/bin/geckodriver"
+export MOZ_HEADLESS=1
+PROFILE
+
+topic "Firefox + geckodriver installed to /app/.firefox"

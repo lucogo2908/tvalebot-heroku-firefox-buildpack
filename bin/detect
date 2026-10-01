@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Always applies; used alongside heroku/python.
+echo "Firefox"
+exit 0
